@@ -142,70 +142,86 @@ if [ "$hosting_option" = "1" ]; then
 else
     # Вариант 2: Поддиректория основного домена
     echo "Вы выбрали размещение на поддиректории основного домена."
-    echo "Копирование конфигурации для поддиректории..."
     
-    # Открываем файл coaching-simple.conf
-    echo "Редактирование /etc/nginx/sites-available/fastpassnews.conf для добавления конфигурации поддиректории..."
-    
-    # Проверяем, существует ли уже блок location /coaching/
-    LOCATION_EXISTS=$(grep -c "location /coaching/" /etc/nginx/sites-available/fastpassnews.conf)
-    
-    if [ "$LOCATION_EXISTS" -eq "0" ]; then
-        # Добавляем блок location в конфигурацию основного домена
-        NGINX_CONFIG=$(cat <<EOF
-
-# Coaching Landing Page Configuration
-location /coaching/ {
-    proxy_pass http://localhost:3002/;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection 'upgrade';
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_cache_bypass \$http_upgrade;
-    proxy_redirect off;
-}
-
-location /coaching/css/ {
-    proxy_pass http://localhost:3002/css/;
-}
-
-location /coaching/js/ {
-    proxy_pass http://localhost:3002/js/;
-}
-
-location /coaching/images/ {
-    proxy_pass http://localhost:3002/images/;
-}
-
-location /coaching/api/ {
-    proxy_pass http://localhost:3002/api/;
-}
-EOF
-)
-        # Создаем временный файл с конфигурацией
-        NGINX_TMP_FILE=$(mktemp)
-        echo "$NGINX_CONFIG" > $NGINX_TMP_FILE
+    # Проверяем, существует ли nginx.conf в /etc/nginx
+    if [ -f "/etc/nginx/nginx.conf" ]; then
+        echo "Найден основной файл конфигурации Nginx."
         
-        # Более безопасный способ добавления конфигурации
-        # Находим последнюю закрывающую скобку в SSL блоке и вставляем перед ней нашу конфигурацию
-        awk '
-        /server {.*listen 443 ssl/ {in_block=1} 
-        in_block && /}/ {if (!found) {system("cat '$NGINX_TMP_FILE'"); found=1}}
-        {print}
-        ' /etc/nginx/sites-available/fastpassnews.conf > /tmp/fastpassnews.conf.new
+        # Ищем директорию, где хранятся конфигурации сайтов
+        CONFIG_DIRS=("/etc/nginx/sites-available" "/etc/nginx/conf.d" "/etc/nginx/sites-enabled" "/usr/local/etc/nginx/conf.d")
+        FOUND_CONF=false
         
-        # Заменяем оригинальный файл новым
-        cp /tmp/fastpassnews.conf.new /etc/nginx/sites-available/fastpassnews.conf
+        for DIR in "${CONFIG_DIRS[@]}"; do
+            if [ -d "$DIR" ]; then
+                echo "Найдена директория конфигураций: $DIR"
+                
+                # Ищем конфигурационный файл fastpassnews
+                for CONF in "$DIR/fastpassnews.conf" "$DIR/default.conf" "$DIR/default"; do
+                    if [ -f "$CONF" ]; then
+                        NGINX_CONF_FILE="$CONF"
+                        echo "Найден файл конфигурации: $NGINX_CONF_FILE"
+                        FOUND_CONF=true
+                        break 2
+                    fi
+                done
+            fi
+        done
         
-        # Очистка
-        rm -f $NGINX_TMP_FILE /tmp/fastpassnews.conf.new
-        
-        echo "Конфигурация для поддиректории добавлена в /etc/nginx/sites-available/fastpassnews.conf"
+        if [ "$FOUND_CONF" = false ]; then
+            echo "ПРЕДУПРЕЖДЕНИЕ: Не найден конфигурационный файл Nginx для fastpassnews.ru"
+            echo "Копируем файл fastpassnews_coaching.conf в /etc/nginx/conf.d/ (стандартная директория)"
+            
+            # Создаем директорию, если ее нет
+            if [ ! -d "/etc/nginx/conf.d" ]; then
+                mkdir -p /etc/nginx/conf.d
+            fi
+            
+            # Копируем конфигурационный файл для включения
+            cp /opt/landing_coach/nginx/fastpassnews_coaching.conf /etc/nginx/conf.d/
+            
+            echo "ВАЖНО: Вам нужно вручную добавить следующие строки в основной конфигурационный файл Nginx:"
+            echo "include /etc/nginx/conf.d/fastpassnews_coaching.conf;"
+            echo "Пожалуйста, добавьте эту строку ПЕРЕД location / в блоке server для fastpassnews.ru"
+        else
+            # Проверяем, существует ли уже блок location /coaching/
+            LOCATION_EXISTS=$(grep -c "location /coaching/" "$NGINX_CONF_FILE")
+            
+            if [ "$LOCATION_EXISTS" -eq "0" ]; then
+                echo "Добавление конфигурации coaching в $NGINX_CONF_FILE..."
+                
+                # Копируем конфигурационный файл в ту же директорию
+                NGINX_DIR=$(dirname "$NGINX_CONF_FILE")
+                cp /opt/landing_coach/nginx/fastpassnews_coaching.conf "$NGINX_DIR/"
+                
+                # Добавляем включение конфигурации перед блоком location /
+                sed -i '/server {.*listen 443 ssl/,/location \/ {/ s|location / {|include '"$NGINX_DIR"'/fastpassnews_coaching.conf;\n    location / {|' "$NGINX_CONF_FILE"
+                
+                echo "Конфигурация coaching успешно добавлена в $NGINX_CONF_FILE"
+            else
+                echo "Конфигурация для /coaching/ уже существует в $NGINX_CONF_FILE"
+                echo "Обновляем конфигурацию..."
+                
+                # Копируем конфигурационный файл в ту же директорию
+                NGINX_DIR=$(dirname "$NGINX_CONF_FILE")
+                cp /opt/landing_coach/nginx/fastpassnews_coaching.conf "$NGINX_DIR/"
+                
+                # Ищем, есть ли уже include для нашего файла
+                INCLUDE_EXISTS=$(grep -c "include .*fastpassnews_coaching.conf" "$NGINX_CONF_FILE")
+                
+                if [ "$INCLUDE_EXISTS" -eq "0" ]; then
+                    echo "Добавляем директиву include для fastpassnews_coaching.conf..."
+                    sed -i '/server {.*listen 443 ssl/,/location \/ {/ s|location / {|include '"$NGINX_DIR"'/fastpassnews_coaching.conf;\n    location / {|' "$NGINX_CONF_FILE"
+                else
+                    echo "Директива include для fastpassnews_coaching.conf уже существует"
+                fi
+            fi
+        fi
     else
-        echo "Конфигурация для поддиректории уже существует в fastpassnews.conf"
+        echo "ПРЕДУПРЕЖДЕНИЕ: Не найден основной файл конфигурации Nginx (/etc/nginx/nginx.conf)"
+        echo "Создаем конфигурационный файл в /opt/landing_coach/nginx/"
+        
+        # Просто создаем файл в нашей директории, который можно будет применить вручную
+        echo "Пожалуйста, добавьте содержимое файла /opt/landing_coach/nginx/fastpassnews_coaching.conf в вашу конфигурацию Nginx вручную"
     fi
 fi
 
