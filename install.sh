@@ -98,15 +98,22 @@ else
     echo "База данных fastpassnews уже существует"
 fi
 
-echo "Проверка существования таблицы coaching_contacts..."
-TABLE_EXISTS=$(sudo -u postgres psql -d fastpassnews -tAc "SELECT 1 FROM pg_tables WHERE tablename='coaching_contacts'")
+echo "Проверка существования таблицы landing_coach..."
+TABLE_EXISTS=$(sudo -u postgres psql -d fastpassnews -tAc "SELECT 1 FROM pg_tables WHERE tablename='landing_coach'")
 if [ -z "$TABLE_EXISTS" ]; then
-    echo "Таблица coaching_contacts не существует. Применение SQL миграции..."
+    echo "Таблица landing_coach не существует. Применение SQL миграции..."
     sudo -u postgres psql -d fastpassnews -f /opt/landing_coach/src/database/init.sql
     echo "Миграция SQL применена"
 else
-    echo "Таблица coaching_contacts уже существует"
+    echo "Таблица landing_coach уже существует"
 fi
+
+# Настройка пользователя базы данных согласно .env
+echo -e "\n=== Настройка пользователя базы данных ==="
+echo "Запуск скрипта setup-db.sh для создания пользователя базы данных..."
+chmod +x /opt/landing_coach/setup-db.sh
+/opt/landing_coach/setup-db.sh
+echo "Настройка пользователя базы данных завершена"
 
 # Настройка Nginx
 echo -e "\n=== Настройка Nginx ==="
@@ -178,8 +185,23 @@ location /coaching/api/ {
 }
 EOF
 )
-        # Вставляем блок перед закрывающей скобкой server блока с SSL
-        sed -i "/server {.*listen 443 ssl/,/}/ s/}/\n$NGINX_CONFIG\n}/" /etc/nginx/sites-available/fastpassnews.conf
+        # Создаем временный файл с конфигурацией
+        NGINX_TMP_FILE=$(mktemp)
+        echo "$NGINX_CONFIG" > $NGINX_TMP_FILE
+        
+        # Более безопасный способ добавления конфигурации
+        # Находим последнюю закрывающую скобку в SSL блоке и вставляем перед ней нашу конфигурацию
+        awk '
+        /server {.*listen 443 ssl/ {in_block=1} 
+        in_block && /}/ {if (!found) {system("cat '$NGINX_TMP_FILE'"); found=1}}
+        {print}
+        ' /etc/nginx/sites-available/fastpassnews.conf > /tmp/fastpassnews.conf.new
+        
+        # Заменяем оригинальный файл новым
+        cp /tmp/fastpassnews.conf.new /etc/nginx/sites-available/fastpassnews.conf
+        
+        # Очистка
+        rm -f $NGINX_TMP_FILE /tmp/fastpassnews.conf.new
         
         echo "Конфигурация для поддиректории добавлена в /etc/nginx/sites-available/fastpassnews.conf"
     else
