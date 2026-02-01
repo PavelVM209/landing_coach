@@ -193,8 +193,39 @@ else
                 NGINX_DIR=$(dirname "$NGINX_CONF_FILE")
                 cp /opt/landing_coach/nginx/fastpassnews_coaching.conf "$NGINX_DIR/"
                 
-                # Добавляем включение конфигурации перед блоком location /
-                sed -i '/server {.*listen 443 ssl/,/location \/ {/ s|location / {|include '"$NGINX_DIR"'/fastpassnews_coaching.conf;\n    location / {|' "$NGINX_CONF_FILE"
+                # Используем подход, аналогичный /landing
+                # Ищем подходящее место для вставки - после location /landing блока если он есть
+                if grep -q "location /landing" "$NGINX_CONF_FILE"; then
+                    echo "Найден блок location /landing, добавляем нашу конфигурацию после него..."
+                    
+                    # Создаем временный файл
+                    TMP_FILE=$(mktemp)
+                    
+                    # Формируем строку для вставки
+                    INCLUDE_LINE="    include $NGINX_DIR/fastpassnews_coaching.conf;"
+                    echo "$INCLUDE_LINE" > "$TMP_FILE"
+                    
+                    # Вставляем после блока location /landing
+                    awk -v include="$(cat $TMP_FILE)" '
+                    /location \/landing/ {
+                        in_landing = 1
+                    }
+                    in_landing && /}/ {
+                        print $0
+                        print include
+                        in_landing = 0
+                        next
+                    }
+                    {print}
+                    ' "$NGINX_CONF_FILE" > "${NGINX_CONF_FILE}.new"
+                    
+                    # Заменяем оригинальный файл
+                    cp "${NGINX_CONF_FILE}.new" "$NGINX_CONF_FILE"
+                    rm -f "${NGINX_CONF_FILE}.new" "$TMP_FILE"
+                else
+                    # Добавляем include перед блоком location /
+                    sed -i '/server {.*listen 443 ssl/,/location \/ {/ s|location / {|include '"$NGINX_DIR"'/fastpassnews_coaching.conf;\n    location / {|' "$NGINX_CONF_FILE"
+                fi
                 
                 echo "Конфигурация coaching успешно добавлена в $NGINX_CONF_FILE"
             else

@@ -104,42 +104,104 @@ if [ "$FOUND_CONF" = true ]; then
         cp /opt/landing_coach/nginx/fastpassnews_coaching.conf "$NGINX_DIR/"
         
         # Определим, нужно ли добавлять include или полностью блоки location
-        if grep -q "include " "$NGINX_CONF_FILE"; then
-            echo "Найдены директивы include, добавляем include для нашего файла..."
+            echo "Аналогично с /landing, добавляем include для /coaching..."
             
-            # Проверим, есть ли server блок с SSL
-            if grep -q "server {.*listen 443 ssl" "$NGINX_CONF_FILE"; then
-                # Находим location / в блоке SSL и добавляем include перед ним
-                sed -i '/server {.*listen 443 ssl/,/location \/ {/ s|location / {|include '"$NGINX_DIR"'/fastpassnews_coaching.conf;\n    location / {|' "$NGINX_CONF_FILE"
-                echo "Добавлена директива include перед location / в блоке SSL"
+            # Копируем конфигурационный файл в директорию с найденным файлом
+            NGINX_DIR=$(dirname "$NGINX_CONF_FILE")
+            cp /opt/landing_coach/nginx/fastpassnews_coaching.conf "$NGINX_DIR/"
+            
+            # Проверим, есть ли уже include для нашего файла
+            INCLUDE_EXISTS=$(grep -c "include .*fastpassnews_coaching.conf" "$NGINX_CONF_FILE")
+            
+            if [ "$INCLUDE_EXISTS" -eq "0" ]; then
+                # Ищем подходящее место для вставки - после location /landing блока если он есть
+                if grep -q "location /landing" "$NGINX_CONF_FILE"; then
+                    echo "Найден блок location /landing, добавляем нашу конфигурацию после него..."
+                    
+                    # Создаем временный файл
+                    TMP_FILE=$(mktemp)
+                    
+                    # Формируем строку для вставки
+                    INCLUDE_LINE="    include $NGINX_DIR/fastpassnews_coaching.conf;"
+                    echo "$INCLUDE_LINE" > "$TMP_FILE"
+                    
+                    # Вставляем после блока location /landing
+                    awk -v include="$(cat $TMP_FILE)" '
+                    /location \/landing/ {
+                        in_landing = 1
+                    }
+                    in_landing && /}/ {
+                        print $0
+                        print include
+                        in_landing = 0
+                        next
+                    }
+                    {print}
+                    ' "$NGINX_CONF_FILE" > "${NGINX_CONF_FILE}.new"
+                    
+                    # Заменяем оригинальный файл
+                    cp "${NGINX_CONF_FILE}.new" "$NGINX_CONF_FILE"
+                    rm -f "${NGINX_CONF_FILE}.new"
+                    
+                    echo "Добавлена директива include после блока location /landing"
+                else
+                    echo "Блок location /landing не найден, ищем подходящее место в конфиге..."
+                    
+                    # Проверим, есть ли server блок с SSL
+                    if grep -q "server {.*listen 443 ssl" "$NGINX_CONF_FILE"; then
+                        # Находим первый подходящий блок location и добавляем include перед ним
+                        TMP_FILE=$(mktemp)
+                        INCLUDE_LINE="    include $NGINX_DIR/fastpassnews_coaching.conf;"
+                        echo "$INCLUDE_LINE" > "$TMP_FILE"
+                        
+                        awk -v include="$(cat $TMP_FILE)" '
+                        /server {.*listen 443 ssl/ { in_ssl = 1 }
+                        in_ssl && /location \// { 
+                            if (!added) {
+                                print include
+                                added = 1
+                            }
+                            print
+                            next
+                        }
+                        {print}
+                        ' "$NGINX_CONF_FILE" > "${NGINX_CONF_FILE}.new"
+                        
+                        # Заменяем оригинальный файл
+                        cp "${NGINX_CONF_FILE}.new" "$NGINX_CONF_FILE"
+                        rm -f "${NGINX_CONF_FILE}.new" "$TMP_FILE"
+                        
+                        echo "Добавлена директива include перед блоком location / в блоке SSL"
+                    else
+                        # Добавляем в конец первого server блока
+                        TMP_FILE=$(mktemp)
+                        INCLUDE_LINE="    include $NGINX_DIR/fastpassnews_coaching.conf;"
+                        echo "$INCLUDE_LINE" > "$TMP_FILE"
+                        
+                        awk -v include="$(cat $TMP_FILE)" '
+                        /server {/ { in_server = 1 }
+                        in_server && /}/ { 
+                            if (!added) {
+                                print include
+                                added = 1
+                            }
+                            print
+                            in_server = 0
+                            next
+                        }
+                        {print}
+                        ' "$NGINX_CONF_FILE" > "${NGINX_CONF_FILE}.new"
+                        
+                        # Заменяем оригинальный файл
+                        cp "${NGINX_CONF_FILE}.new" "$NGINX_CONF_FILE"
+                        rm -f "${NGINX_CONF_FILE}.new" "$TMP_FILE"
+                        
+                        echo "Добавлена директива include в конец первого блока server"
+                    fi
+                fi
             else
-                # Добавляем в конец первого server блока
-                sed -i '/server {/,/}/ s|.*}|    include '"$NGINX_DIR"'/fastpassnews_coaching.conf;\n}&|' "$NGINX_CONF_FILE"
-                echo "Добавлена директива include в конец первого блока server"
+                echo "Директива include для fastpassnews_coaching.conf уже существует"
             fi
-        else
-            echo "Не найдены директивы include, добавляем конфигурацию напрямую..."
-            
-            # Создаем временный файл
-            TMP_FILE=$(mktemp)
-            
-            # Читаем содержимое fastpassnews_coaching.conf
-            cat /opt/landing_coach/nginx/fastpassnews_coaching.conf > "$TMP_FILE"
-            
-            # Находим подходящее место для вставки
-            if grep -q "server {.*listen 443 ssl" "$NGINX_CONF_FILE"; then
-                # Добавляем перед location / в блоке SSL
-                sed -i '/server {.*listen 443 ssl/,/location \/ {/ s|location / {|'"$(cat $TMP_FILE)"'\n    location / {|' "$NGINX_CONF_FILE"
-                echo "Добавлена конфигурация перед location / в блоке SSL"
-            else
-                # Добавляем в конец первого server блока
-                sed -i '/server {/,/}/ s|.*}|'"$(cat $TMP_FILE)"'\n}&|' "$NGINX_CONF_FILE"
-                echo "Добавлена конфигурация в конец первого блока server"
-            fi
-            
-            # Удаляем временный файл
-            rm -f "$TMP_FILE"
-        fi
     else
         echo "Конфигурация для /coaching/ уже существует в $NGINX_CONF_FILE"
         echo "Заменяем существующую конфигурацию..."
